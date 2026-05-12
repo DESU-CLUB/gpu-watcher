@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GPU Watcher</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f7f4;
+        --fg: #1d2430;
+        --muted: #667085;
+        --line: #d7d9d2;
+        --panel: #ffffff;
+        --accent: #0b6bcb;
+        --good: #047857;
+        --warn: #b45309;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #121417;
+          --fg: #f4f6f8;
+          --muted: #a9b1bd;
+          --line: #303741;
+          --panel: #1b2027;
+          --accent: #67a7f7;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        width: min(1180px, calc(100vw - 32px));
+        margin: 28px auto 48px;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-end;
+        margin-bottom: 20px;
+      }
+      h1, h2 { margin: 0; letter-spacing: 0; }
+      h1 { font-size: 28px; }
+      h2 { font-size: 16px; margin-bottom: 12px; }
+      .muted { color: var(--muted); }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+      }
+      .stat {
+        min-height: 92px;
+      }
+      .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+      .value {
+        font-size: 24px;
+        font-weight: 700;
+        margin-top: 6px;
+        overflow-wrap: anywhere;
+      }
+      .status {
+        color: var(--good);
+      }
+      .status.busy {
+        color: var(--warn);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th, td {
+        text-align: left;
+        padding: 10px 8px;
+        border-bottom: 1px solid var(--line);
+      }
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+      .two {
+        display: grid;
+        grid-template-columns: 1.2fr .8fr;
+        gap: 12px;
+      }
+      button, select {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--fg);
+        border-radius: 6px;
+        padding: 8px 10px;
+      }
+      canvas {
+        width: 100%;
+        height: 260px;
+      }
+      @media (max-width: 840px) {
+        header, .two { display: block; }
+        .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        header > div:last-child { margin-top: 12px; }
+      }
+      @media (max-width: 520px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>GPU Watcher</h1>
+          <div class="muted" id="sampled">Waiting for samples</div>
+        </div>
+        <div>
+          <select id="range">
+            <option value="6">6h</option>
+            <option value="24" selected>24h</option>
+            <option value="72">3d</option>
+            <option value="360">15d</option>
+          </select>
+          <button id="refresh">Refresh</button>
+        </div>
+      </header>
+
+      <section class="grid">
+        <div class="panel stat">
+          <div class="label">State</div>
+          <div class="value status" id="state">Idle</div>
+        </div>
+        <div class="panel stat">
+          <div class="label">Current User</div>
+          <div class="value" id="current-user">None</div>
+        </div>
+        <div class="panel stat">
+          <div class="label">GPU Utilization</div>
+          <div class="value" id="gpu-util">0%</div>
+        </div>
+        <div class="panel stat">
+          <div class="label">VRAM Used</div>
+          <div class="value" id="vram">0 MB</div>
+        </div>
+      </section>
+
+      <section class="two">
+        <div class="panel">
+          <h2>Recent GPU Utilization</h2>
+          <canvas id="chart" width="900" height="260"></canvas>
+        </div>
+        <div class="panel">
+          <h2>Usage By User</h2>
+          <table>
+            <thead>
+              <tr><th>User</th><th>Time</th><th>Avg VRAM</th><th>Avg Util</th></tr>
+            </thead>
+            <tbody id="usage"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top: 12px;">
+        <h2>Active Processes</h2>
+        <table>
+          <thead>
+            <tr><th>User</th><th>PID</th><th>VRAM</th><th>Source</th><th>Command</th></tr>
+          </thead>
+          <tbody id="processes"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      $("refresh").addEventListener("click", load);
+      $("range").addEventListener("change", load);
+
+      async function load() {
+        const hours = $("range").value;
+        const [status, usage, timeseries] = await Promise.all([
+          fetch("/api/status").then((r) => r.json()),
+          fetch(`/api/usage?hours=${hours}`).then((r) => r.json()),
+          fetch(`/api/timeseries?hours=${hours}`).then((r) => r.json()),
+        ]);
+        renderStatus(status);
+        renderUsage(usage.users || []);
+        renderProcesses(status.processes || []);
+        renderChart(timeseries.samples || []);
+      }
+
+      function renderStatus(status) {
+        $("sampled").textContent = status.sampled_at ? `Last sample ${new Date(status.sampled_at).toLocaleString()}` : "Waiting for samples";
+        const state = $("state");
+        state.textContent = status.idle ? "Idle" : "Busy";
+        state.classList.toggle("busy", !status.idle);
+        const users = [...new Set((status.processes || []).map((p) => p.attribution_label))];
+        $("current-user").textContent = users.length ? users.join(", ") : "None";
+        const gpus = status.gpus || [];
+        const avgUtil = avg(gpus.map((g) => g.utilization_gpu_percent).filter((v) => v !== null));
+        const used = sum(gpus.map((g) => g.memory_used_mb || 0));
+        const total = sum(gpus.map((g) => g.memory_total_mb || 0));
+        $("gpu-util").textContent = `${Math.round(avgUtil || 0)}%`;
+        $("vram").textContent = total ? `${used} / ${total} MB` : "0 MB";
+      }
+
+      function renderUsage(users) {
+        $("usage").innerHTML = users.map((u) => `
+          <tr>
+            <td>${escapeHtml(u.label)}</td>
+            <td>${formatDuration(u.active_seconds || 0)}</td>
+            <td>${Math.round(u.avg_process_vram_mb || 0)} MB</td>
+            <td>${Math.round(u.avg_gpu_util_percent || 0)}%</td>
+          </tr>
+        `).join("") || `<tr><td colspan="4" class="muted">No usage in range</td></tr>`;
+      }
+
+      function renderProcesses(processes) {
+        $("processes").innerHTML = processes.map((p) => `
+          <tr>
+            <td>${escapeHtml(p.attribution_label)}</td>
+            <td>${p.pid}</td>
+            <td>${p.used_memory_mb || 0} MB</td>
+            <td>${escapeHtml(p.attribution_source)}</td>
+            <td>${escapeHtml(p.command || "")}</td>
+          </tr>
+        `).join("") || `<tr><td colspan="5" class="muted">No active GPU processes</td></tr>`;
+      }
+
+      function renderChart(samples) {
+        const canvas = $("chart");
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--line");
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 5; i++) {
+          const y = 20 + i * 52;
+          ctx.beginPath(); ctx.moveTo(36, y); ctx.lineTo(canvas.width - 8, y); ctx.stroke();
+        }
+        const points = samples
+          .filter((s) => s.gpu_index === 0 && s.utilization_gpu_percent !== null)
+          .map((s) => ({ t: new Date(s.sampled_at).getTime(), v: s.utilization_gpu_percent }));
+        if (points.length < 2) return;
+        const minT = Math.min(...points.map((p) => p.t));
+        const maxT = Math.max(...points.map((p) => p.t));
+        ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent");
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach((p, i) => {
+          const x = 36 + ((p.t - minT) / Math.max(1, maxT - minT)) * (canvas.width - 52);
+          const y = 228 - (p.v / 100) * 208;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      function avg(values) {
+        return values.length ? sum(values) / values.length : 0;
+      }
+      function sum(values) {
+        return values.reduce((a, b) => a + b, 0);
+      }
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, (ch) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+        })[ch]);
+      }
+      function formatDuration(seconds) {
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 60) return `${minutes}m`;
+        const hours = Math.floor(minutes / 60);
+        const rest = minutes % 60;
+        return rest ? `${hours}h ${rest}m` : `${hours}h`;
+      }
+      load();
+      setInterval(load, 30000);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+sampling_interval_seconds = 60
+idle_threshold_hours = 2
+retention_days = 15
+database_path = "gpu-watcher.sqlite3"
+
+[dashboard]
+host = "127.0.0.1"
+port = 8765
+
+[resend]
+enabled = false
+from_email = "GPU Watcher <gpu@example.com>"
+to_emails = ["you@example.com"]
+
+[identity.manual_labels]
+# "linux-username-or-tailscale-hostname" = "Display Name"
+
+[identity.ip_labels]
+# Keep real IP-to-name mappings only in your private config.toml.
+# They are used transiently for attribution and redacted before storage/API output.
+
+[identity.user_labels]
+# "ubuntu" = "Shared GPU Account"
