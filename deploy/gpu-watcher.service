@@ -1,0 +1,17 @@
+[Unit]
+Description=GPU Watcher
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/gpu-watcher
+EnvironmentFile=-/etc/gpu-watcher/gpu-watcher.env
+ExecStart=/opt/gpu-watcher/.venv/bin/gpu-watcher --config /etc/gpu-watcher/config.toml all
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

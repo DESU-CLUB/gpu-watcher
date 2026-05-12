@@ -11,13 +11,17 @@ from .store import Store
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="gpu-watcher")
+    subcommand_options = argparse.ArgumentParser(add_help=False)
+    subcommand_options.add_argument("--config", default=argparse.SUPPRESS)
+    subcommand_options.add_argument("--log-level", default=argparse.SUPPRESS)
+
     parser.add_argument("--config", default="config.toml")
     parser.add_argument("--log-level", default="INFO")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("collect-once")
-    subparsers.add_parser("run")
-    subparsers.add_parser("web")
-    subparsers.add_parser("all")
+    subparsers.add_parser("collect-once", parents=[subcommand_options])
+    subparsers.add_parser("run", parents=[subcommand_options])
+    subparsers.add_parser("web", parents=[subcommand_options])
+    subparsers.add_parser("all", parents=[subcommand_options])
 
     args = parser.parse_args(argv)
     logging.basicConfig(

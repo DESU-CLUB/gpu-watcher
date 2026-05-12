@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from .config import AppConfig
 from .models import Sample, to_iso
 from .store import Store
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,7 @@ class IdleAlertManager:
         self._config = config
         self._store = store
         self._resend_client = resend_client
+        self._warned_alert_errors: set[str] = set()
 
     def evaluate(self, sample: Sample) -> AlertDecision:
         if not sample.is_idle:
@@ -94,33 +98,52 @@ class IdleAlertManager:
         if not threshold_reached:
             return AlertDecision(False, "below_threshold", idle_since)
 
-        self._send_idle_alert(idle_since, sample.sampled_at)
+        notification_sent = self._send_idle_alert(idle_since, sample.sampled_at)
+        if not notification_sent:
+            self._store.set_alert_state(idle_alert_error=True)
+            return AlertDecision(False, "notification_failed", idle_since)
+
         self._store.set_alert_state(
             idle_alert_sent=True,
             idle_alert_sent_at=to_iso(sample.sampled_at),
+            idle_alert_error=False,
         )
-        return AlertDecision(True, "sent", idle_since)
+        reason = "sent" if self._config.resend.enabled else "notifications_disabled"
+        return AlertDecision(True, reason, idle_since)
 
-    def _send_idle_alert(self, idle_since: datetime, now: datetime) -> None:
+    def _send_idle_alert(self, idle_since: datetime, now: datetime) -> bool:
         if not self._config.resend.enabled:
-            return
+            return True
         if not self._config.resend_api_key:
-            raise RuntimeError("RESEND_API_KEY is required when Resend alerts are enabled")
+            self._warn_once("RESEND_API_KEY is required when Resend alerts are enabled")
+            return False
         if not self._config.resend.from_email or not self._config.resend.to_emails:
-            raise RuntimeError("Resend from_email and to_emails must be configured")
+            self._warn_once("Resend from_email and to_emails must be configured")
+            return False
 
         client = self._resend_client or ResendClient(self._config.resend_api_key)
         idle_hours = (now - idle_since).total_seconds() / 3600
-        client.send_email(
-            from_email=self._config.resend.from_email,
-            to_emails=self._config.resend.to_emails,
-            subject=f"GPU idle for {idle_hours:.1f} hours",
-            html=(
-                "<p>The shared GPU appears idle.</p>"
-                f"<p><strong>Idle since:</strong> {to_iso(idle_since)}</p>"
-                f"<p><strong>Idle duration:</strong> {idle_hours:.1f} hours</p>"
-            ),
-        )
+        try:
+            client.send_email(
+                from_email=self._config.resend.from_email,
+                to_emails=self._config.resend.to_emails,
+                subject=f"GPU idle for {idle_hours:.1f} hours",
+                html=(
+                    "<p>The shared GPU appears idle.</p>"
+                    f"<p><strong>Idle since:</strong> {to_iso(idle_since)}</p>"
+                    f"<p><strong>Idle duration:</strong> {idle_hours:.1f} hours</p>"
+                ),
+            )
+        except RuntimeError as exc:
+            self._warn_once(str(exc))
+            return False
+        return True
+
+    def _warn_once(self, message: str) -> None:
+        if message in self._warned_alert_errors:
+            return
+        self._warned_alert_errors.add(message)
+        LOGGER.warning("idle alert notification skipped: %s", message)
 
 
 def utc_now() -> datetime:
