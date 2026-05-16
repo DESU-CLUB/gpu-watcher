@@ -187,20 +187,45 @@
 
     <script>
       const $ = (id) => document.getElementById(id);
-      $("refresh").addEventListener("click", load);
-      $("range").addEventListener("change", load);
+      const STATUS_REFRESH_MS = 2000;
+      const HISTORY_REFRESH_MS = 30000;
 
-      async function load() {
+      $("refresh").addEventListener("click", loadAll);
+      $("range").addEventListener("change", loadAll);
+
+      async function loadAll() {
+        await Promise.all([loadStatus(), loadHistory()]);
+      }
+
+      async function loadStatus() {
+        try {
+          const status = await fetchJson("/api/status");
+          renderStatus(status);
+          renderProcesses(status.processes || []);
+        } catch (error) {
+          console.error("status refresh failed", error);
+          $("sampled").textContent = "Status refresh failed";
+        }
+      }
+
+      async function loadHistory() {
         const hours = $("range").value;
-        const [status, usage, timeseries] = await Promise.all([
-          fetch("/api/status").then((r) => r.json()),
-          fetch(`/api/usage?hours=${hours}`).then((r) => r.json()),
-          fetch(`/api/timeseries?hours=${hours}`).then((r) => r.json()),
-        ]);
-        renderStatus(status);
-        renderUsage(usage.users || []);
-        renderProcesses(status.processes || []);
-        renderChart(timeseries.samples || []);
+        try {
+          const [usage, timeseries] = await Promise.all([
+            fetchJson(`/api/usage?hours=${hours}`),
+            fetchJson(`/api/timeseries?hours=${hours}`),
+          ]);
+          renderUsage(usage.users || []);
+          renderChart(timeseries.samples || []);
+        } catch (error) {
+          console.error("history refresh failed", error);
+        }
+      }
+
+      async function fetchJson(url) {
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+        return response.json();
       }
 
       function renderStatus(status) {
@@ -286,8 +311,9 @@
         const rest = minutes % 60;
         return rest ? `${hours}h ${rest}m` : `${hours}h`;
       }
-      load();
-      setInterval(load, 30000);
+      loadAll();
+      setInterval(loadStatus, STATUS_REFRESH_MS);
+      setInterval(loadHistory, HISTORY_REFRESH_MS);
     </script>
   </body>
 </html>
